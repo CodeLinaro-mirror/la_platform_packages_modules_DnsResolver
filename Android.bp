@@ -10,6 +10,11 @@ cc_library_headers {
     export_include_dirs: ["."],
 }
 
+cc_library_headers {
+    name: "dnsproxyd_protocol_headers",
+    export_include_dirs: ["include/dnsproxyd_protocol"],
+}
+
 aidl_interface {
     name: "dnsresolver_aidl_interface",
     local_include_dir: "binder",
@@ -43,6 +48,7 @@ aidl_interface {
         "2",
         "3",
         "4",
+        "5",
     ],
 }
 
@@ -123,13 +129,11 @@ cc_library {
         "dnsresolver_aidl_interface-ndk_platform",
         "libbase",
         "libcutils",
-        "libjsoncpp",
         "libnetdutils",
         "libprotobuf-cpp-lite",
         "libstatslog_resolv",
         "libstatspush_compat",
         "libsysutils",
-        "libutils", // Used by libstatslog_resolv
         "netd_event_listener_interface-ndk_platform",
         "server_configurable_flags",
         "stats_proto",
@@ -150,7 +154,7 @@ cc_library {
         "libssl",
     ],
     header_libs: [
-        "libnetd_client_headers",
+        "libnetdbinder_utils_headers",
     ],
     export_include_dirs: ["include"],
 
@@ -258,11 +262,12 @@ cc_test {
     ],
     static_libs: [
         "dnsresolver_aidl_interface-unstable-ndk_platform",
+        "netd_aidl_interface-ndk_platform",
         "netd_event_listener_interface-ndk_platform",
         "libcutils",
         "libgmock",
         "libnetd_resolv",
-        "libnetd_test_dnsresponder",
+        "libnetd_test_dnsresponder_ndk",
         "libnetd_test_resolv_utils",
         "libnetdutils",
         "libprotobuf-cpp-lite",
