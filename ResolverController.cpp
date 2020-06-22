@@ -24,7 +24,6 @@
 
 #include <netdb.h>
 
-#include <Fwmark.h>
 #include <aidl/android/net/IDnsResolver.h>
 #include <android-base/logging.h>
 #include <android-base/strings.h>
@@ -202,21 +201,22 @@ int ResolverController::flushNetworkCache(unsigned netId) {
 int ResolverController::setResolverConfiguration(const ResolverParamsParcel& resolverParams) {
     using aidl::android::net::IDnsResolver;
 
-    // At private DNS validation time, we only know the netId, so we have to guess/compute the
-    // corresponding socket mark.
-    Fwmark fwmark;
-    fwmark.netId = resolverParams.netId;
-    fwmark.explicitlySelected = true;
-    fwmark.protectedFromVpn = true;
-    fwmark.permission = PERMISSION_SYSTEM;
+    // Expect to get the mark with system permission.
+    android_net_context netcontext;
+    gResNetdCallbacks.get_network_context(resolverParams.netId, 0 /* uid */, &netcontext);
 
     // Allow at most MAXNS private DNS servers in a network to prevent too many broken servers.
     std::vector<std::string> tlsServers = resolverParams.tlsServers;
     if (tlsServers.size() > MAXNS) {
         tlsServers.resize(MAXNS);
     }
+
+    // Use app_mark for DoT connection. Using dns_mark might result in reaching the DoT servers
+    // through a different network. For example, on a VPN with no DNS servers (Do53), if the VPN
+    // applies to UID 0, dns_mark is assigned for default network rathan the VPN. (note that it's
+    // possible that a VPN doesn't have any DNS servers but DoT servers in DNS strict mode)
     const int err =
-            gPrivateDnsConfiguration.set(resolverParams.netId, fwmark.intValue, tlsServers,
+            gPrivateDnsConfiguration.set(resolverParams.netId, netcontext.app_mark, tlsServers,
                                          resolverParams.tlsName, resolverParams.caCertificate);
 
     if (err != 0) {
@@ -233,7 +233,7 @@ int ResolverController::setResolverConfiguration(const ResolverParamsParcel& res
 
     return resolv_set_nameservers(resolverParams.netId, resolverParams.servers,
                                   resolverParams.domains, res_params,
-                                  resolverParams.experimentalOptions);
+                                  resolverParams.resolverOptions, resolverParams.transportTypes);
 }
 
 int ResolverController::getResolverInfo(int32_t netId, std::vector<std::string>* servers,
@@ -362,8 +362,7 @@ void ResolverController::dump(DumpWriter& dw, unsigned netId) {
             dw.decIndent();
         }
         dw.println("Concurrent DNS query timeout: %d", wait_for_pending_req_timeout_count[0]);
-        resolv_stats_dump(dw, netId);
-        resolv_oem_options_dump(dw, netId);
+        resolv_netconfig_dump(dw, netId);
     }
     dw.decIndent();
 }

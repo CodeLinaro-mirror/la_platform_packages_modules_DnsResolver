@@ -1,24 +1,4 @@
-// TODO: Remove libnetd_test_dnsresponder after eliminating all users.
-cc_library_static {
-    name: "libnetd_test_dnsresponder",
-    defaults: ["netd_defaults", "resolv_test_defaults"],
-    shared_libs: [
-        "dnsresolver_aidl_interface-unstable-cpp",
-        "libbinder",
-        "libnetd_client",
-        "libnetdutils",
-        "libssl",
-        "netd_aidl_interface-cpp",
-    ],
-    srcs: [
-        "dns_responder.cpp",
-        "dns_responder_client.cpp",
-        "dns_tls_frontend.cpp",
-    ],
-    export_include_dirs: ["."],
-}
-
-cc_library {
+cc_test_library {
     name: "libnetd_test_dnsresponder_ndk",
     defaults: ["netd_defaults", "resolv_test_defaults"],
     shared_libs: [
@@ -37,8 +17,8 @@ cc_library {
         "libcrypto_static",
         "libnetdutils",
         "libssl",
-        "netd_event_listener_interface-ndk_platform",
         "netd_aidl_interface-ndk_platform",
+        "netd_event_listener_interface-ndk_platform",
     ],
     srcs: [
         "dns_responder.cpp",
