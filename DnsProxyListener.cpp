@@ -84,25 +84,6 @@ void logArguments(int argc, char** argv) {
     }
 }
 
-template<typename T>
-void tryThreadOrError(SocketClient* cli, T* handler) {
-    cli->incRef();
-
-    const int rval = netdutils::threadLaunch(handler);
-    if (rval == 0) {
-        // SocketClient decRef() happens in the handler's run() method.
-        return;
-    }
-
-    char* msg = nullptr;
-    asprintf(&msg, "%s (%d)", strerror(-rval), -rval);
-    cli->sendMsg(ResponseCode::OperationFailed, msg, false);
-    free(msg);
-
-    delete handler;
-    cli->decRef();
-}
-
 bool checkAndClearUseLocalNameserversFlag(unsigned* netid) {
     if (netid == nullptr || ((*netid) & NETID_USE_LOCAL_NAMESERVERS) == 0) {
         return false;
@@ -116,7 +97,7 @@ constexpr bool requestingUseLocalNameservers(unsigned flags) {
 }
 
 bool queryingViaTls(unsigned dns_netid) {
-    const auto privateDnsStatus = gPrivateDnsConfiguration.getStatus(dns_netid);
+    const auto privateDnsStatus = PrivateDnsConfiguration::getInstance().getStatus(dns_netid);
     switch (privateDnsStatus.mode) {
         case PrivateDnsMode::OPPORTUNISTIC:
             return !privateDnsStatus.validatedServers().empty();
@@ -294,7 +275,7 @@ bool parseQuery(const uint8_t* msg, size_t msgLen, uint16_t* query_id, int* rr_t
 // Note: Even if it returns PDM_OFF, it doesn't mean there's no DoT stats in the message
 // because Private DNS mode can change at any time.
 PrivateDnsModes getPrivateDnsModeForMetrics(uint32_t netId) {
-    switch (gPrivateDnsConfiguration.getStatus(netId).mode) {
+    switch (PrivateDnsConfiguration::getInstance().getStatus(netId).mode) {
         case PrivateDnsMode::OFF:
             // It can also be due to netId not found.
             return PrivateDnsModes::PDM_OFF;
@@ -563,10 +544,23 @@ DnsProxyListener::DnsProxyListener() : FrameworkListener(SOCKET_NAME) {
     registerCmd(new GetDnsNetIdCommand());
 }
 
+void DnsProxyListener::Handler::spawn() {
+    const int rval = netdutils::threadLaunch(this);
+    if (rval == 0) {
+        return;
+    }
+
+    char* msg = nullptr;
+    asprintf(&msg, "%s (%d)", strerror(-rval), -rval);
+    mClient->sendMsg(ResponseCode::OperationFailed, msg, false);
+    free(msg);
+    delete this;
+}
+
 DnsProxyListener::GetAddrInfoHandler::GetAddrInfoHandler(SocketClient* c, char* host, char* service,
                                                          addrinfo* hints,
                                                          const android_net_context& netcontext)
-    : mClient(c), mHost(host), mService(service), mHints(hints), mNetContext(netcontext) {}
+    : Handler(c), mHost(host), mService(service), mHints(hints), mNetContext(netcontext) {}
 
 DnsProxyListener::GetAddrInfoHandler::~GetAddrInfoHandler() {
     free(mHost);
@@ -763,7 +757,6 @@ void DnsProxyListener::GetAddrInfoHandler::run() {
     reportDnsEvent(INetdEventListener::EVENT_GETADDRINFO, mNetContext, latencyUs, rv, event, mHost,
                    ip_addrs, total_ip_addr_count);
     freeaddrinfo(result);
-    mClient->decRef();
 }
 
 std::string DnsProxyListener::GetAddrInfoHandler::threadName() {
@@ -841,9 +834,7 @@ int DnsProxyListener::GetAddrInfoCmd::runCommand(SocketClient *cli,
         hints->ai_protocol = ai_protocol;
     }
 
-    DnsProxyListener::GetAddrInfoHandler* handler =
-            new DnsProxyListener::GetAddrInfoHandler(cli, name, service, hints, netcontext);
-    tryThreadOrError(cli, handler);
+    (new GetAddrInfoHandler(cli, name, service, hints, netcontext))->spawn();
     return 0;
 }
 
@@ -888,19 +879,13 @@ int DnsProxyListener::ResNSendCommand::runCommand(SocketClient* cli, int argc, c
         netcontext.flags |= NET_CONTEXT_FLAG_USE_LOCAL_NAMESERVERS;
     }
 
-    DnsProxyListener::ResNSendHandler* handler =
-            new DnsProxyListener::ResNSendHandler(cli, argv[3], flags, netcontext);
-    tryThreadOrError(cli, handler);
+    (new ResNSendHandler(cli, argv[3], flags, netcontext))->spawn();
     return 0;
 }
 
 DnsProxyListener::ResNSendHandler::ResNSendHandler(SocketClient* c, std::string msg, uint32_t flags,
                                                    const android_net_context& netcontext)
-    : mClient(c), mMsg(std::move(msg)), mFlags(flags), mNetContext(netcontext) {}
-
-DnsProxyListener::ResNSendHandler::~ResNSendHandler() {
-    mClient->decRef();
-}
+    : Handler(c), mMsg(std::move(msg)), mFlags(flags), mNetContext(netcontext) {}
 
 void DnsProxyListener::ResNSendHandler::run() {
     LOG(DEBUG) << "ResNSendHandler::run: " << mFlags << " / {" << mNetContext.app_netid << " "
@@ -1090,15 +1075,13 @@ int DnsProxyListener::GetHostByNameCmd::runCommand(SocketClient *cli,
         netcontext.flags |= NET_CONTEXT_FLAG_USE_LOCAL_NAMESERVERS;
     }
 
-    DnsProxyListener::GetHostByNameHandler* handler =
-            new DnsProxyListener::GetHostByNameHandler(cli, name, af, netcontext);
-    tryThreadOrError(cli, handler);
+    (new GetHostByNameHandler(cli, name, af, netcontext))->spawn();
     return 0;
 }
 
 DnsProxyListener::GetHostByNameHandler::GetHostByNameHandler(SocketClient* c, char* name, int af,
                                                              const android_net_context& netcontext)
-    : mClient(c), mName(name), mAf(af), mNetContext(netcontext) {}
+    : Handler(c), mName(name), mAf(af), mNetContext(netcontext) {}
 
 DnsProxyListener::GetHostByNameHandler::~GetHostByNameHandler() {
     free(mName);
@@ -1190,7 +1173,6 @@ void DnsProxyListener::GetHostByNameHandler::run() {
     const int total_ip_addr_count = extractGetHostByNameAnswers(hp, &ip_addrs);
     reportDnsEvent(INetdEventListener::EVENT_GETHOSTBYNAME, mNetContext, latencyUs, rv, event,
                    mName, ip_addrs, total_ip_addr_count);
-    mClient->decRef();
 }
 
 std::string DnsProxyListener::GetHostByNameHandler::threadName() {
@@ -1242,16 +1224,14 @@ int DnsProxyListener::GetHostByAddrCmd::runCommand(SocketClient *cli,
         netcontext.flags |= NET_CONTEXT_FLAG_USE_LOCAL_NAMESERVERS;
     }
 
-    DnsProxyListener::GetHostByAddrHandler* handler = new DnsProxyListener::GetHostByAddrHandler(
-            cli, addr, addrLen, addrFamily, netcontext);
-    tryThreadOrError(cli, handler);
+    (new GetHostByAddrHandler(cli, addr, addrLen, addrFamily, netcontext))->spawn();
     return 0;
 }
 
 DnsProxyListener::GetHostByAddrHandler::GetHostByAddrHandler(SocketClient* c, void* address,
                                                              int addressLen, int addressFamily,
                                                              const android_net_context& netcontext)
-    : mClient(c),
+    : Handler(c),
       mAddress(address),
       mAddressLen(addressLen),
       mAddressFamily(addressFamily),
@@ -1351,7 +1331,6 @@ void DnsProxyListener::GetHostByAddrHandler::run() {
 
     reportDnsEvent(INetdEventListener::EVENT_GETHOSTBYADDR, mNetContext, latencyUs, rv, event,
                    (hp && hp->h_name) ? hp->h_name : "null", {}, 0);
-    mClient->decRef();
 }
 
 std::string DnsProxyListener::GetHostByAddrHandler::threadName() {
