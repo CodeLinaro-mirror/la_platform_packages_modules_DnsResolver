@@ -28,7 +28,6 @@
 
 #include "Dns64Configuration.h"
 #include "DnsResolver.h"
-#include "DnsTlsDispatcher.h"
 #include "PrivateDnsConfiguration.h"
 #include "ResolverEventReporter.h"
 #include "ResolverStats.h"
@@ -167,9 +166,6 @@ void ResolverController::destroyNetworkCache(unsigned netId) {
     resolv_delete_cache_for_net(netId);
     mDns64Configuration.stopPrefixDiscovery(netId);
     PrivateDnsConfiguration::getInstance().clear(netId);
-
-    // Don't get this instance in PrivateDnsConfiguration. It's probe to deadlock.
-    DnsTlsDispatcher::getInstance().forceCleanup(netId);
 }
 
 int ResolverController::createNetworkCache(unsigned netId) {

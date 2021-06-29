@@ -26,23 +26,11 @@ namespace android::net {
 
 using namespace std::chrono_literals;
 using android::netdutils::IPSockAddr;
-using std::chrono::microseconds;
 using std::chrono::milliseconds;
 using ::testing::IsEmpty;
 using ::testing::UnorderedElementsAreArray;
 
 namespace {
-
-constexpr auto NO_AVERAGE_LATENCY = std::nullopt;
-
-// A helper which can propagate the failure to outside of the stmt to know which line
-// of stmt fails. The expectation fails only for the first failed stmt.
-#define EXPECT_NO_FAILURE(stmt)                                         \
-    do {                                                                \
-        bool alreadyFailed = HasFailure();                              \
-        stmt;                                                           \
-        if (!alreadyFailed && HasFailure()) EXPECT_FALSE(HasFailure()); \
-    } while (0)
 
 DnsQueryEvent makeDnsQueryEvent(const Protocol protocol, const NsRcode rcode,
                                 const milliseconds& latency) {
@@ -53,11 +41,11 @@ DnsQueryEvent makeDnsQueryEvent(const Protocol protocol, const NsRcode rcode,
     return event;
 }
 
-StatsData makeStatsData(const IPSockAddr& server, const int total, const microseconds& latencyUs,
+StatsData makeStatsData(const IPSockAddr& server, const int total, const milliseconds& latencyMs,
                         const std::map<int, int>& rcodeCounts) {
     StatsData ret(server);
     ret.total = total;
-    ret.latencyUs = latencyUs;
+    ret.latencyUs = latencyMs;
     ret.rcodeCounts = rcodeCounts;
     return ret;
 }
@@ -155,17 +143,6 @@ class DnsStatsTest : public ::testing::Test {
         EXPECT_EQ(dumpString, "\n");
     }
 
-    void verifyDnsStatsContent(Protocol protocol, const std::vector<StatsData>& expectedStats,
-                               const std::optional<microseconds>& expectedAvgLatency) {
-        if (expectedStats.empty()) {
-            EXPECT_THAT(mDnsStats.getStats(protocol), IsEmpty());
-        } else {
-            EXPECT_THAT(mDnsStats.getStats(protocol), UnorderedElementsAreArray(expectedStats));
-        }
-
-        EXPECT_EQ(mDnsStats.getAverageLatencyUs(protocol), expectedAvgLatency);
-    }
-
     DnsStats mDnsStats;
 };
 
@@ -223,9 +200,9 @@ TEST_F(DnsStatsTest, SetServers) {
             expectedStats.push_back(makeStatsData(IPSockAddr::toIPSockAddr(exp, 53), 0, 0ms, {}));
         }
 
-        EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_TCP, expectedStats, NO_AVERAGE_LATENCY));
-        EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_UDP, expectedStats, NO_AVERAGE_LATENCY));
-        EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_DOT, expectedStats, NO_AVERAGE_LATENCY));
+        EXPECT_THAT(mDnsStats.getStats(PROTO_TCP), UnorderedElementsAreArray(expectedStats));
+        EXPECT_THAT(mDnsStats.getStats(PROTO_UDP), UnorderedElementsAreArray(expectedStats));
+        EXPECT_THAT(mDnsStats.getStats(PROTO_DOT), UnorderedElementsAreArray(expectedStats));
     }
 
     verifyDumpOutput({}, {}, {});
@@ -244,9 +221,9 @@ TEST_F(DnsStatsTest, SetServersDifferentPorts) {
     EXPECT_FALSE(mDnsStats.setServers(servers, PROTO_UDP));
     EXPECT_FALSE(mDnsStats.setServers(servers, PROTO_DOT));
 
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_TCP, {}, NO_AVERAGE_LATENCY));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_UDP, {}, NO_AVERAGE_LATENCY));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_DOT, {}, NO_AVERAGE_LATENCY));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_TCP), IsEmpty());
+    EXPECT_THAT(mDnsStats.getStats(PROTO_UDP), IsEmpty());
+    EXPECT_THAT(mDnsStats.getStats(PROTO_DOT), IsEmpty());
     verifyDumpOutput({}, {}, {});
 
     EXPECT_TRUE(mDnsStats.setServers(std::vector(servers.begin() + 2, servers.end()), PROTO_TCP));
@@ -259,9 +236,9 @@ TEST_F(DnsStatsTest, SetServersDifferentPorts) {
             makeStatsData(servers[6], 0, 0ms, {}), makeStatsData(servers[7], 0, 0ms, {}),
     };
 
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_TCP, expectedStats, NO_AVERAGE_LATENCY));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_UDP, expectedStats, NO_AVERAGE_LATENCY));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_DOT, expectedStats, NO_AVERAGE_LATENCY));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_TCP), UnorderedElementsAreArray(expectedStats));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_UDP), UnorderedElementsAreArray(expectedStats));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_DOT), UnorderedElementsAreArray(expectedStats));
     verifyDumpOutput(expectedStats, expectedStats, expectedStats);
 }
 
@@ -292,18 +269,18 @@ TEST_F(DnsStatsTest, AddStatsAndClear) {
             makeStatsData(servers[1], 1, 10ms, {{NS_R_NO_ERROR, 1}}),
     };
 
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_TCP, expectedStatsForTcp, NO_AVERAGE_LATENCY));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_UDP, expectedStatsForUdp, 10ms));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_DOT, {}, NO_AVERAGE_LATENCY));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_TCP), UnorderedElementsAreArray(expectedStatsForTcp));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_UDP), UnorderedElementsAreArray(expectedStatsForUdp));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_DOT), IsEmpty());
     verifyDumpOutput(expectedStatsForTcp, expectedStatsForUdp, {});
 
     // Clear stats.
     EXPECT_TRUE(mDnsStats.setServers({}, PROTO_TCP));
     EXPECT_TRUE(mDnsStats.setServers({}, PROTO_UDP));
     EXPECT_TRUE(mDnsStats.setServers({}, PROTO_DOT));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_TCP, {}, NO_AVERAGE_LATENCY));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_UDP, {}, NO_AVERAGE_LATENCY));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_DOT, {}, NO_AVERAGE_LATENCY));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_TCP), IsEmpty());
+    EXPECT_THAT(mDnsStats.getStats(PROTO_UDP), IsEmpty());
+    EXPECT_THAT(mDnsStats.getStats(PROTO_DOT), IsEmpty());
     verifyDumpOutput({}, {}, {});
 }
 
@@ -331,7 +308,6 @@ TEST_F(DnsStatsTest, StatsRemainsInExistentServer) {
             makeStatsData(servers[1], 4, 520ms, {{NS_R_NO_ERROR, 2}, {NS_R_TIMEOUT, 2}}),
     };
     EXPECT_THAT(mDnsStats.getStats(PROTO_UDP), UnorderedElementsAreArray(expectedStats));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_UDP, expectedStats, 106ms));
     verifyDumpOutput({}, expectedStats, {});
 
     // Update the server list, the stats of 127.0.0.2 will remain.
@@ -347,7 +323,6 @@ TEST_F(DnsStatsTest, StatsRemainsInExistentServer) {
             makeStatsData(servers[2], 0, 0ms, {}),
     };
     EXPECT_THAT(mDnsStats.getStats(PROTO_UDP), UnorderedElementsAreArray(expectedStats));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_UDP, expectedStats, 130ms));
     verifyDumpOutput({}, expectedStats, {});
 
     // Let's add a record to 127.0.0.2 again.
@@ -358,7 +333,6 @@ TEST_F(DnsStatsTest, StatsRemainsInExistentServer) {
             makeStatsData(servers[2], 0, 0ms, {}),
     };
     EXPECT_THAT(mDnsStats.getStats(PROTO_UDP), UnorderedElementsAreArray(expectedStats));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_UDP, expectedStats, 106ms));
     verifyDumpOutput({}, expectedStats, {});
 }
 
@@ -389,9 +363,9 @@ TEST_F(DnsStatsTest, AddStatsRecords_100000) {
 
     for (size_t i = 0; i < operations; i++) {
         const NsRcode rcode = static_cast<NsRcode>(rcodes[i % rcodeNum]);
-        const auto eventTcp = makeDnsQueryEvent(PROTO_TCP, rcode, milliseconds(i));
-        const auto eventUdp = makeDnsQueryEvent(PROTO_UDP, rcode, milliseconds(i));
-        const auto eventDot = makeDnsQueryEvent(PROTO_DOT, rcode, milliseconds(i));
+        const auto eventTcp = makeDnsQueryEvent(PROTO_TCP, rcode, 10ms);
+        const auto eventUdp = makeDnsQueryEvent(PROTO_UDP, rcode, 10ms);
+        const auto eventDot = makeDnsQueryEvent(PROTO_DOT, rcode, 10ms);
         for (const auto& server : servers) {
             SCOPED_TRACE(server.toString() + "-" + std::to_string(i));
             ASSERT_TRUE(mDnsStats.addStats(server, eventTcp));
@@ -404,19 +378,16 @@ TEST_F(DnsStatsTest, AddStatsRecords_100000) {
     for (const auto& rcode : rcodes) {
         expectedRcodeCounts.try_emplace(rcode, 32);
     }
-
-    // The average latency 99935.5 ms is derived from (99872ms + 99873ms + ... + 99999ms) / logSize,
-    // where logSize is 128.
     const std::vector<StatsData> expectedStats = {
-            makeStatsData(servers[0], logSize, logSize * 99935500us, expectedRcodeCounts),
-            makeStatsData(servers[1], logSize, logSize * 99935500us, expectedRcodeCounts),
-            makeStatsData(servers[2], logSize, logSize * 99935500us, expectedRcodeCounts),
-            makeStatsData(servers[3], logSize, logSize * 99935500us, expectedRcodeCounts),
+            makeStatsData(servers[0], logSize, logSize * 10ms, expectedRcodeCounts),
+            makeStatsData(servers[1], logSize, logSize * 10ms, expectedRcodeCounts),
+            makeStatsData(servers[2], logSize, logSize * 10ms, expectedRcodeCounts),
+            makeStatsData(servers[3], logSize, logSize * 10ms, expectedRcodeCounts),
     };
 
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_TCP, expectedStats, 99935500us));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_UDP, expectedStats, 99935500us));
-    EXPECT_NO_FAILURE(verifyDnsStatsContent(PROTO_DOT, expectedStats, 99935500us));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_TCP), UnorderedElementsAreArray(expectedStats));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_UDP), UnorderedElementsAreArray(expectedStats));
+    EXPECT_THAT(mDnsStats.getStats(PROTO_DOT), UnorderedElementsAreArray(expectedStats));
     verifyDumpOutput(expectedStats, expectedStats, expectedStats);
 }
 

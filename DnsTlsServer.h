@@ -24,14 +24,14 @@
 
 #include <params.h>
 
-#include "IPrivateDnsServer.h"
+#include "PrivateDnsCommon.h"
 
 namespace android {
 namespace net {
 
 // DnsTlsServer represents a recursive resolver that supports, or may support, a
 // secure protocol.
-struct DnsTlsServer : public IPrivateDnsServer {
+struct DnsTlsServer {
     // Default constructor.
     DnsTlsServer() {}
 
@@ -63,17 +63,8 @@ struct DnsTlsServer : public IPrivateDnsServer {
     bool wasExplicitlyConfigured() const;
     std::string toIpString() const;
 
-    PrivateDnsTransport transport() const override { return PrivateDnsTransport::kDot; }
-    std::string provider() const override { return name; }
-    netdutils::IPSockAddr addr() const override { return netdutils::IPSockAddr::toIPSockAddr(ss); }
-    uint32_t validationMark() const override { return mark; }
-
-    Validation validationState() const override { return mValidation; }
-    void setValidationState(Validation val) override { mValidation = val; }
-    bool probe() override {
-        // TODO: implement it.
-        return false;
-    }
+    Validation validationState() const { return mValidation; }
+    void setValidationState(Validation val) { mValidation = val; }
 
     // The socket mark used for validation.
     // Note that the mark of a connection to which the DnsResolver sends app's DNS requests can
@@ -83,8 +74,8 @@ struct DnsTlsServer : public IPrivateDnsServer {
 
     // Return whether or not the server can be used for a network. It depends on
     // the resolver configuration.
-    bool active() const override { return mActive; }
-    void setActive(bool val) override { mActive = val; }
+    bool active() const { return mActive; }
+    void setActive(bool val) { mActive = val; }
 
   private:
     // State, unrelated to the comparison of DnsTlsServer objects.

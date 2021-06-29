@@ -27,6 +27,7 @@
 #include "DnsTlsTransport.h"
 #include "ResolverEventReporter.h"
 #include "netd_resolv/resolv.h"
+#include "netdutils/BackoffSequence.h"
 #include "util.h"
 
 using aidl::android::net::resolv::aidl::IDnsResolverUnsolicitedEventListener;
@@ -69,11 +70,11 @@ int PrivateDnsConfiguration::set(int32_t netId, uint32_t mark,
         if (!parseServer(s.c_str(), &parsed)) {
             return -EINVAL;
         }
-        auto server = std::make_unique<DnsTlsServer>(parsed);
-        server->name = name;
-        server->certificate = caCert;
-        server->mark = mark;
-        tmp[ServerIdentity(*server)] = std::move(server);
+        DnsTlsServer server(parsed);
+        server.name = name;
+        server.certificate = caCert;
+        server.mark = mark;
+        tmp[ServerIdentity(server)] = server;
     }
 
     std::lock_guard guard(mPrivateDnsLock);
@@ -92,24 +93,24 @@ int PrivateDnsConfiguration::set(int32_t netId, uint32_t mark,
     auto& tracker = mPrivateDnsTransports[netId];
 
     // Add the servers if not contained in tracker.
-    for (auto& [identity, server] : tmp) {
+    for (const auto& [identity, server] : tmp) {
         if (tracker.find(identity) == tracker.end()) {
-            tracker[identity] = std::move(server);
+            tracker[identity] = server;
         }
     }
 
     for (auto& [identity, server] : tracker) {
         const bool active = tmp.find(identity) != tmp.end();
-        server->setActive(active);
+        server.setActive(active);
 
         // For simplicity, deem the validation result of inactive servers as unreliable.
-        if (!server->active() && server->validationState() == Validation::success) {
+        if (!server.active() && server.validationState() == Validation::success) {
             updateServerState(identity, Validation::success_but_expired, netId);
         }
 
-        if (needsValidation(*server)) {
+        if (needsValidation(server)) {
             updateServerState(identity, Validation::in_process, netId);
-            startValidation(identity, netId, false);
+            startValidation(server, netId, false);
         }
     }
 
@@ -127,11 +128,9 @@ PrivateDnsStatus PrivateDnsConfiguration::getStatus(unsigned netId) const {
     const auto netPair = mPrivateDnsTransports.find(netId);
     if (netPair != mPrivateDnsTransports.end()) {
         for (const auto& [_, server] : netPair->second) {
-            if (server->isDot() && server->active()) {
-                DnsTlsServer& dotServer = *static_cast<DnsTlsServer*>(server.get());
-                status.serversMap.emplace(dotServer, server->validationState());
+            if (server.active()) {
+                status.serversMap.emplace(server, server.validationState());
             }
-            // TODO: also add DoH server to the map.
         }
     }
 
@@ -146,7 +145,7 @@ void PrivateDnsConfiguration::clear(unsigned netId) {
 }
 
 base::Result<void> PrivateDnsConfiguration::requestValidation(unsigned netId,
-                                                              const ServerIdentity& identity,
+                                                              const DnsTlsServer& server,
                                                               uint32_t mark) {
     std::lock_guard guard(mPrivateDnsLock);
 
@@ -160,39 +159,40 @@ base::Result<void> PrivateDnsConfiguration::requestValidation(unsigned netId,
         return Errorf("Private DNS setting is not opportunistic mode");
     }
 
-    auto result = getPrivateDnsLocked(identity, netId);
-    if (!result.ok()) {
-        return result.error();
+    auto netPair = mPrivateDnsTransports.find(netId);
+    if (netPair == mPrivateDnsTransports.end()) {
+        return Errorf("NetId not found in mPrivateDnsTransports");
     }
 
-    const IPrivateDnsServer* server = result.value();
+    auto& tracker = netPair->second;
+    const ServerIdentity identity = ServerIdentity(server);
+    auto it = tracker.find(identity);
+    if (it == tracker.end()) {
+        return Errorf("Server was removed");
+    }
 
-    if (!server->active()) return Errorf("Server is not active");
+    const DnsTlsServer& target = it->second;
 
-    if (server->validationState() != Validation::success) {
+    if (!target.active()) return Errorf("Server is not active");
+
+    if (target.validationState() != Validation::success) {
         return Errorf("Server validation state mismatched");
     }
 
     // Don't run the validation if |mark| (from android_net_context.dns_mark) is different.
     // This is to protect validation from running on unexpected marks.
     // Validation should be associated with a mark gotten by system permission.
-    if (server->validationMark() != mark) return Errorf("Socket mark mismatched");
+    if (target.mark != mark) return Errorf("Socket mark mismatched");
 
     updateServerState(identity, Validation::in_process, netId);
-    startValidation(identity, netId, true);
+    startValidation(target, netId, true);
     return {};
 }
 
-void PrivateDnsConfiguration::startValidation(const ServerIdentity& identity, unsigned netId,
-                                              bool isRevalidation) {
-    // This ensures that the thread sends probe at least once in case
-    // the server is removed before the thread starts running.
-    // TODO: consider moving these code to the thread.
-    const auto result = getPrivateDnsLocked(identity, netId);
-    if (!result.ok()) return;
-    DnsTlsServer server = *static_cast<const DnsTlsServer*>(result.value());
-
-    std::thread validate_thread([this, identity, server, netId, isRevalidation] {
+void PrivateDnsConfiguration::startValidation(const DnsTlsServer& server, unsigned netId,
+                                              bool isRevalidation) REQUIRES(mPrivateDnsLock) {
+    // Note that capturing |server|, |netId|, and |isRevalidation| in this lambda create copies.
+    std::thread validate_thread([this, server, netId, isRevalidation] {
         setThreadName(StringPrintf("TlsVerify_%u", netId).c_str());
 
         // cat /proc/sys/net/ipv4/tcp_syn_retries yields "6".
@@ -208,19 +208,22 @@ void PrivateDnsConfiguration::startValidation(const ServerIdentity& identity, un
         // such validation passes per day is about ~30MB per month, in the
         // worst case. Otherwise, this will cost ~600 SYNs per month
         // (6 SYNs per ip, 4 ips per validation pass, 24 passes per day).
-        auto backoff = mBackoffBuilder.build();
+        auto backoff = netdutils::BackoffSequence<>::Builder()
+                               .withInitialRetransmissionTime(std::chrono::seconds(60))
+                               .withMaximumRetransmissionTime(std::chrono::seconds(3600))
+                               .build();
 
         while (true) {
             // ::validate() is a blocking call that performs network operations.
             // It can take milliseconds to minutes, up to the SYN retry limit.
             LOG(WARNING) << "Validating DnsTlsServer " << server.toIpString() << " with mark 0x"
-                         << std::hex << server.validationMark();
-            const bool success = DnsTlsTransport::validate(server, server.validationMark());
+                         << std::hex << server.mark;
+            const bool success = DnsTlsTransport::validate(server, server.mark);
             LOG(WARNING) << "validateDnsTlsServer returned " << success << " for "
                          << server.toIpString();
 
             const bool needs_reeval =
-                    this->recordPrivateDnsValidation(identity, netId, success, isRevalidation);
+                    this->recordPrivateDnsValidation(server, netId, success, isRevalidation);
 
             if (!needs_reeval) {
                 break;
@@ -237,11 +240,11 @@ void PrivateDnsConfiguration::startValidation(const ServerIdentity& identity, un
     validate_thread.detach();
 }
 
-void PrivateDnsConfiguration::sendPrivateDnsValidationEvent(const ServerIdentity& identity,
+void PrivateDnsConfiguration::sendPrivateDnsValidationEvent(const DnsTlsServer& server,
                                                             unsigned netId, bool success) {
     LOG(DEBUG) << "Sending validation " << (success ? "success" : "failure") << " event on netId "
-               << netId << " for " << identity.sockaddr.ip().toString() << " with hostname {"
-               << identity.provider << "}";
+               << netId << " for " << server.toIpString() << " with hostname {" << server.name
+               << "}";
     // Send a validation event to NetdEventListenerService.
     const auto& listeners = ResolverEventReporter::getInstance().getListeners();
     if (listeners.empty()) {
@@ -249,16 +252,15 @@ void PrivateDnsConfiguration::sendPrivateDnsValidationEvent(const ServerIdentity
                 << "Validation event not sent since no INetdEventListener receiver is available.";
     }
     for (const auto& it : listeners) {
-        it->onPrivateDnsValidationEvent(netId, identity.sockaddr.ip().toString(), identity.provider,
-                                        success);
+        it->onPrivateDnsValidationEvent(netId, server.toIpString(), server.name, success);
     }
 
     // Send a validation event to unsolicited event listeners.
     const auto& unsolEventListeners = ResolverEventReporter::getInstance().getUnsolEventListeners();
     const PrivateDnsValidationEventParcel validationEvent = {
             .netId = static_cast<int32_t>(netId),
-            .ipAddress = identity.sockaddr.ip().toString(),
-            .hostname = identity.provider,
+            .ipAddress = server.toIpString(),
+            .hostname = server.name,
             .validation = success ? IDnsResolverUnsolicitedEventListener::VALIDATION_RESULT_SUCCESS
                                   : IDnsResolverUnsolicitedEventListener::VALIDATION_RESULT_FAILURE,
     };
@@ -267,11 +269,11 @@ void PrivateDnsConfiguration::sendPrivateDnsValidationEvent(const ServerIdentity
     }
 }
 
-bool PrivateDnsConfiguration::recordPrivateDnsValidation(const ServerIdentity& identity,
-                                                         unsigned netId, bool success,
-                                                         bool isRevalidation) {
+bool PrivateDnsConfiguration::recordPrivateDnsValidation(const DnsTlsServer& server, unsigned netId,
+                                                         bool success, bool isRevalidation) {
     constexpr bool NEEDS_REEVALUATION = true;
     constexpr bool DONT_REEVALUATE = false;
+    const ServerIdentity identity = ServerIdentity(server);
 
     std::lock_guard guard(mPrivateDnsLock);
 
@@ -301,19 +303,23 @@ bool PrivateDnsConfiguration::recordPrivateDnsValidation(const ServerIdentity& i
     auto& tracker = netPair->second;
     auto serverPair = tracker.find(identity);
     if (serverPair == tracker.end()) {
-        LOG(WARNING) << "Server " << identity.sockaddr.ip().toString()
+        LOG(WARNING) << "Server " << server.toIpString()
                      << " was removed during private DNS validation";
         success = false;
         reevaluationStatus = DONT_REEVALUATE;
-    } else if (!serverPair->second->active()) {
-        LOG(WARNING) << "Server " << identity.sockaddr.ip().toString()
-                     << " was removed from the configuration";
+    } else if (!(serverPair->second == server)) {
+        LOG(WARNING) << "Server " << server.toIpString()
+                     << " was changed during private DNS validation";
+        success = false;
+        reevaluationStatus = DONT_REEVALUATE;
+    } else if (!serverPair->second.active()) {
+        LOG(WARNING) << "Server " << server.toIpString() << " was removed from the configuration";
         success = false;
         reevaluationStatus = DONT_REEVALUATE;
     }
 
     // Send private dns validation result to listeners.
-    sendPrivateDnsValidationEvent(identity, netId, success);
+    sendPrivateDnsValidationEvent(server, netId, success);
 
     if (success) {
         updateServerState(identity, Validation::success, netId);
@@ -332,22 +338,26 @@ bool PrivateDnsConfiguration::recordPrivateDnsValidation(const ServerIdentity& i
 
 void PrivateDnsConfiguration::updateServerState(const ServerIdentity& identity, Validation state,
                                                 uint32_t netId) {
-    const auto result = getPrivateDnsLocked(identity, netId);
-    if (!result.ok()) {
+    auto netPair = mPrivateDnsTransports.find(netId);
+    if (netPair == mPrivateDnsTransports.end()) {
         notifyValidationStateUpdate(identity.sockaddr, Validation::fail, netId);
         return;
     }
 
-    auto* server = result.value();
+    auto& tracker = netPair->second;
+    if (tracker.find(identity) == tracker.end()) {
+        notifyValidationStateUpdate(identity.sockaddr, Validation::fail, netId);
+        return;
+    }
 
-    server->setValidationState(state);
+    tracker[identity].setValidationState(state);
     notifyValidationStateUpdate(identity.sockaddr, state, netId);
 
     RecordEntry record(netId, identity, state);
     mPrivateDnsLog.push(std::move(record));
 }
 
-bool PrivateDnsConfiguration::needsValidation(const IPrivateDnsServer& server) const {
+bool PrivateDnsConfiguration::needsValidation(const DnsTlsServer& server) {
     // The server is not expected to be used on the network.
     if (!server.active()) return false;
 
@@ -361,28 +371,6 @@ bool PrivateDnsConfiguration::needsValidation(const IPrivateDnsServer& server) c
     if (server.validationState() == Validation::success_but_expired) return true;
 
     return false;
-}
-
-base::Result<IPrivateDnsServer*> PrivateDnsConfiguration::getPrivateDns(
-        const ServerIdentity& identity, unsigned netId) {
-    std::lock_guard guard(mPrivateDnsLock);
-    return getPrivateDnsLocked(identity, netId);
-}
-
-base::Result<IPrivateDnsServer*> PrivateDnsConfiguration::getPrivateDnsLocked(
-        const ServerIdentity& identity, unsigned netId) {
-    auto netPair = mPrivateDnsTransports.find(netId);
-    if (netPair == mPrivateDnsTransports.end()) {
-        return Errorf("Failed to get private DNS: netId {} not found", netId);
-    }
-
-    auto iter = netPair->second.find(identity);
-    if (iter == netPair->second.end()) {
-        return Errorf("Failed to get private DNS: server {{{}/{}}} not found", identity.sockaddr,
-                      identity.provider);
-    }
-
-    return iter->second.get();
 }
 
 void PrivateDnsConfiguration::setObserver(PrivateDnsValidationObserver* observer) {
