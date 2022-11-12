@@ -239,7 +239,7 @@ int resNSendToAiError(int err, int rcode) {
 
 bool setQueryId(span<uint8_t> msg, uint16_t query_id) {
     if ((size_t)msg.size() < sizeof(HEADER)) {
-        errno = EINVAL;
+        LOG(ERROR) << __func__ << ": Invalid parameter";
         return false;
     }
     auto hp = reinterpret_cast<HEADER*>(msg.data());
@@ -681,9 +681,9 @@ DnsProxyListener::GetAddrInfoHandler::GetAddrInfoHandler(SocketClient* c, std::s
                                                          std::unique_ptr<addrinfo> hints,
                                                          const android_net_context& netcontext)
     : Handler(c),
-      mHost(move(host)),
-      mService(move(service)),
-      mHints(move(hints)),
+      mHost(std::move(host)),
+      mService(std::move(service)),
+      mHints(std::move(hints)),
       mNetContext(netcontext) {}
 
 static bool evaluate_domain_name(const android_net_context& netcontext, const char* host) {
@@ -954,7 +954,7 @@ int DnsProxyListener::GetAddrInfoCmd::runCommand(SocketClient* cli, int argc, ch
         hints->ai_protocol = ai_protocol;
     }
 
-    (new GetAddrInfoHandler(cli, name, service, move(hints), netcontext))->spawn();
+    (new GetAddrInfoHandler(cli, name, service, std::move(hints), netcontext))->spawn();
     return 0;
 }
 
@@ -1085,9 +1085,14 @@ void DnsProxyListener::ResNSendHandler::run() {
         return;
     }
 
-    // Restore query id and send answer
-    if (!setQueryId({ansBuf.data(), ansLen}, original_query_id) ||
-        !sendLenAndData(mClient, ansLen, ansBuf.data())) {
+    // Restore query id
+    if (!setQueryId({ansBuf.data(), ansLen}, original_query_id)) {
+        LOG(WARNING) << "ResNSendHandler::run: resnsend: failed to restore query id";
+        return;
+    }
+
+    // Send answer
+    if (!sendLenAndData(mClient, ansLen, ansBuf.data())) {
         PLOG(WARNING) << "ResNSendHandler::run: resnsend: failed to send answer to uid " << uid
                       << " pid " << mClient->getPid();
         return;
@@ -1197,7 +1202,7 @@ int DnsProxyListener::GetHostByNameCmd::runCommand(SocketClient* cli, int argc, 
 DnsProxyListener::GetHostByNameHandler::GetHostByNameHandler(SocketClient* c, std::string name,
                                                              int af,
                                                              const android_net_context& netcontext)
-    : Handler(c), mName(move(name)), mAf(af), mNetContext(netcontext) {}
+    : Handler(c), mName(std::move(name)), mAf(af), mNetContext(netcontext) {}
 
 void DnsProxyListener::GetHostByNameHandler::doDns64Synthesis(int32_t* rv, hostent* hbuf, char* buf,
                                                               size_t buflen, struct hostent** hpp,
