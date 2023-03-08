@@ -65,4 +65,5 @@ interface IDnsResolver {
   const int TRANSPORT_LOWPAN = 6;
   const int TRANSPORT_TEST = 7;
   const int TRANSPORT_USB = 8;
+  const int TRANSPORT_THREAD = 9;
 }
