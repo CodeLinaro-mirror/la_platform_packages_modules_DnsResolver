@@ -229,8 +229,8 @@ cc_library {
         "libmodules-utils-build",
         "libprotobuf-cpp-lite",
         "libstatslog_resolv",
-        "libstatspush_compat",
         "libsysutils",
+        "libutils",
         "netd_event_listener_interface-lateststable-ndk",
         "server_configurable_flags",
         "stats_proto",
@@ -249,14 +249,10 @@ cc_library {
         "libcrypto",
         "liblog", //Used by libstatslog_resolv
         "libssl",
+        "libstatssocket",
     ],
     header_libs: [
         "libnetdbinder_utils_headers",
-    ],
-    runtime_libs: [
-        // Causes the linkerconfig to create a namespace link from resolv to the
-        // libstatssocket library within the statsd apex
-        "libstatssocket",
     ],
     export_include_dirs: ["include"],
 
@@ -296,7 +292,7 @@ genrule {
     name: "statslog_resolv.h",
     tools: ["stats-log-api-gen"],
     cmd: "$(location stats-log-api-gen) --header $(genDir)/statslog_resolv.h --module resolv" +
-        " --namespace android,net,stats --minApiLevel 29",
+        " --namespace android,net,stats --minApiLevel 30",
     out: [
         "statslog_resolv.h",
     ],
@@ -306,7 +302,7 @@ genrule {
     name: "statslog_resolv.cpp",
     tools: ["stats-log-api-gen"],
     cmd: "$(location stats-log-api-gen) --cpp $(genDir)/statslog_resolv.cpp --module resolv" +
-        " --namespace android,net,stats --importHeader statslog_resolv.h --minApiLevel 29",
+        " --namespace android,net,stats --importHeader statslog_resolv.h --minApiLevel 30",
     out: [
         "statslog_resolv.cpp",
     ],
@@ -320,10 +316,9 @@ cc_library_static {
     export_generated_headers: ["statslog_resolv.h"],
     static_libs: [
         "libcutils",
-        "libstatspush_compat",
     ],
-    header_libs: [
-        "libgtest_prod_headers", // Used by libstatspush_compat
+    shared_libs: [
+        "libstatssocket",
     ],
     apex_available: ["com.android.resolv"],
     min_sdk_version: "30",
@@ -362,6 +357,7 @@ doh_rust_deps = [
     "liblibc",
     "liblog_rust",
     "libring",
+    "libstatslog_rust",
     "libthiserror",
     "libtokio",
     "liburl",
@@ -408,6 +404,11 @@ rust_ffi_static {
 
     rlibs: doh_rust_deps + ["libquiche_static"],
     prefer_rlib: true,
+
+    shared_libs: [
+        "libstatssocket",
+    ],
+
     // TODO(b/194022174), for unit tests to run on the Android 10 platform,
     // libunwind must be statically linked.
     whole_static_libs: ["libunwind"],
@@ -438,6 +439,7 @@ rust_ffi_static {
         "liblog_rust",
         "libquiche_static",
         "libring",
+        "libstatslog_rust",
         "libthiserror",
         "libtokio",
         "liburl",

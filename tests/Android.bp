@@ -102,6 +102,7 @@ cc_test {
     ],
     shared_libs: [
         "libbinder_ndk",
+        "libstatssocket",
     ],
     static_libs: [
         "dnsresolver_aidl_interface-lateststable-ndk",
@@ -251,6 +252,7 @@ cc_test {
     ],
     shared_libs: [
         "libbinder_ndk",
+        "libstatssocket",
     ],
     static_libs: [
         "dnsresolver_aidl_interface-lateststable-ndk",
@@ -269,6 +271,7 @@ cc_test {
         "libstatslog_resolv",
         "libstatspush_compat",
         "libsysutils",
+        "libutils",
         "resolv_stats_test_utils",
         "server_configurable_flags",
         "stats_proto",
@@ -332,9 +335,11 @@ cc_test {
         "libgmock",
         "libnetdutils",
         "libssl",
+        "stats_proto",
     ],
     shared_libs: [
         "libnetd_client",
+        "libstatssocket",
     ],
 }
 
@@ -354,6 +359,7 @@ cc_defaults {
     ],
     shared_libs: [
         "libbinder_ndk",
+        "libstatssocket",
     ],
     static_libs: [
         "dnsresolver_aidl_interface-lateststable-ndk",
@@ -372,6 +378,18 @@ cc_defaults {
         "server_configurable_flags",
         "stats_proto",
     ],
+    target: {
+        android: {
+            shared_libs: [
+                "libutils",
+            ],
+        },
+        host: {
+            static_libs: [
+                "libutils",
+            ],
+        },
+    },
     fuzz_config: {
        cc: [
             "cken@google.com",
@@ -416,14 +434,12 @@ cc_fuzz {
             shared_libs: [
                 "libbinder_ndk",
                 "libbinder",
-                "libutils",
             ],
         },
         host: {
             static_libs: [
                 "libbinder_ndk",
                 "libbinder",
-                "libutils",
             ],
         },
         darwin: {

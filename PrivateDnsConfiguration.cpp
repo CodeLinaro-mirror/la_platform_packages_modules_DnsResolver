@@ -365,11 +365,11 @@ void PrivateDnsConfiguration::startDotValidation(const ServerIdentity& identity,
         while (true) {
             // ::validate() is a blocking call that performs network operations.
             // It can take milliseconds to minutes, up to the SYN retry limit.
-            LOG(WARNING) << "Validating DnsTlsServer " << server.toIpString() << " with mark 0x"
+            LOG(WARNING) << "Validating DnsTlsServer " << server.toString() << " with mark 0x"
                          << std::hex << server.validationMark();
             const bool success = DnsTlsTransport::validate(server, server.validationMark());
             LOG(WARNING) << "validateDnsTlsServer returned " << success << " for "
-                         << server.toIpString();
+                         << server.toString();
 
             const bool needs_reeval =
                     this->recordDotValidation(identity, netId, success, isRevalidation);
@@ -602,6 +602,9 @@ int PrivateDnsConfiguration::setDoh(int32_t netId, uint32_t mark,
         return 0;
     }
 
+    const NetworkType networkType = resolv_get_network_types_for_net(netId);
+    const PrivateDnsStatus status = getStatusLocked(netId);
+
     // Sort the input servers to prefer IPv6.
     const std::vector<std::string> sortedServers = sortServers(servers);
 
@@ -632,8 +635,10 @@ int PrivateDnsConfiguration::setDoh(int32_t netId, uint32_t mark,
     const FeatureFlags flags = makeDohFeatureFlags();
     LOG(DEBUG) << __func__ << ": " << toString(flags);
 
+    const PrivateDnsModes privateDnsMode = convertEnumType(status.mode);
     return doh_net_new(mDohDispatcher, netId, dohId.httpsTemplate.c_str(), dohId.host.c_str(),
-                       dohId.ipAddr.c_str(), mark, caCert.c_str(), &flags);
+                       dohId.ipAddr.c_str(), mark, caCert.c_str(), &flags, networkType,
+                       privateDnsMode);
 }
 
 void PrivateDnsConfiguration::clearDoh(unsigned netId) {
