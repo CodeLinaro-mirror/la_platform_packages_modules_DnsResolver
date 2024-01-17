@@ -18,6 +18,7 @@
 
 package android.net;
 /* @hide */
+@JavaDerive(equals=true, toString=true)
 parcelable ResolverParamsParcel {
   int netId;
   int sampleValiditySeconds;
@@ -35,4 +36,6 @@ parcelable ResolverParamsParcel {
   int tlsConnectTimeoutMs = 0;
   @nullable android.net.ResolverOptionsParcel resolverOptions;
   int[] transportTypes = {};
+  boolean meteredNetwork = false;
+  @nullable android.net.resolv.aidl.DohParamsParcel dohParams;
 }
