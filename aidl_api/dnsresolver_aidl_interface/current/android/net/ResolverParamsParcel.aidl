@@ -38,4 +38,5 @@ parcelable ResolverParamsParcel {
   int[] transportTypes = {};
   boolean meteredNetwork = false;
   @nullable android.net.resolv.aidl.DohParamsParcel dohParams;
+  @utf8InCpp String[] interfaceNames = {};
 }
