@@ -34,6 +34,7 @@ interface IDnsResolver {
   void registerUnsolicitedEventListener(android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener listener);
   void setResolverOptions(int netId, in android.net.ResolverOptionsParcel optionParams);
   void setAllowBypassPrivateDnsOnNetwork(int netId, int uid, boolean allowed);
+  void setDnsForwarding(int downstreamIfIndex, in @nullable android.net.resolv.aidl.DnsForwardingParamsParcel upstreamParams);
   const int RESOLVER_PARAMS_SAMPLE_VALIDITY = 0;
   const int RESOLVER_PARAMS_SUCCESS_THRESHOLD = 1;
   const int RESOLVER_PARAMS_MIN_SAMPLES = 2;
