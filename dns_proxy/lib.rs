@@ -20,5 +20,7 @@
 
 #[cfg(feature = "android-ffi")]
 mod ffi;
-pub(crate) mod packet;
+mod packet;
 mod server;
+// In-progress drop-in replacement for server.
+mod server2;
