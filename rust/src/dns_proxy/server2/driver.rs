@@ -16,7 +16,7 @@
 
 //! Provides a backing task to implement a Server
 
-use crate::packet::DnsPacket;
+use crate::dns_proxy::packet::DnsPacket;
 
 use super::{Command, NetworkContext, UpstreamConfig};
 use anyhow::bail;
@@ -105,6 +105,12 @@ impl<T: NetworkContext> Driver<T> {
         Ok(())
     }
 
+    // Note that stop_forwarding does not affect any in-progress requests.
+    fn stop_forwarding(&mut self, ifindex: u32) -> Result<()> {
+        let _ = self.upstream_config_map.remove(&ifindex);
+        Ok(())
+    }
+
     // Required because in6_pktinfo.ipi6_ifindex is not consistently defined for different
     // linux-like platforms. In particular, the Linux host vs Android variants are different for
     // some reason (i32 vs u32).
@@ -185,6 +191,10 @@ impl<T: NetworkContext> Driver<T> {
                         // next iteration of the loop.
                         let _ = status_tx.send(res);
                     }
+                    Command::StopForwarding { ifindex, status_tx } => {
+                        let res = self.stop_forwarding(ifindex);
+                        let _ = status_tx.send(res);
+                    }
                 }
                 Ok(())
             }
@@ -203,7 +213,7 @@ impl<T: NetworkContext> Driver<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{packet::tests::TEST_VALID_DNS_QUERY, server2::MockNetworkContext};
+    use crate::dns_proxy::{packet::tests::TEST_VALID_DNS_QUERY, server2::MockNetworkContext};
 
     use super::*;
     use nix::libc::in6_addr;
