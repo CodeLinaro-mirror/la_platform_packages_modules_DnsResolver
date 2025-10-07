@@ -54,7 +54,7 @@ cc_library_headers {
     ],
 }
 
-dnsresolver_aidl_interface_lateststable_version = "V16"
+dnsresolver_aidl_interface_lateststable_version = "V17"
 
 cc_library_static {
     name: "dnsresolver_aidl_interface-lateststable-ndk",
@@ -533,6 +533,7 @@ rust_ffi_static {
 rust_defaults {
     name: "libdns_proxy_defaults",
     rlibs: [
+        "libanyhow",
         "libbytes",
         "libfutures",
         "liblog_rust",

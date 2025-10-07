@@ -131,7 +131,7 @@ impl<C: NetContextClient> Driver<C> {
             }
             Command::ForwardUdpQuery(udp_dns_query) => {
                 if let Err(e) = self.handle_udp_dns_query(udp_dns_query) {
-                    error!("Error handling UDP query: {}", e);
+                    error!("Error handling UDP query: {e}");
                 }
                 Some(())
             }
@@ -184,7 +184,7 @@ impl<C: NetContextClient> Driver<C> {
         let socket = self.configure_upstream_udp_socket(&upstream_param)?;
         tokio::spawn(async move {
             if let Err(e) = resolve_and_send_udp(socket, query).await {
-                error!("Error resolving and sending UDP query: {}", e);
+                error!("Error resolving and sending UDP query: {e}");
             }
         });
         Ok(())
@@ -289,13 +289,13 @@ async fn udp_recv(socket: &UdpSocket) -> Result<(Vec<u8>, SocketAddr)> {
 }
 
 async fn resolve_and_send_udp(socket: UdpSocket, query: UdpDnsQuery) -> Result<()> {
-    // TODO (b:379992903): randomize DNS ID.
+    // TODO: b/379992903 - Randomize DNS ID.
     let query_dns_id = query.query_packet.header().id;
     socket.send(query.query_packet.as_bytes()).await?;
 
     let (buf, _) = udp_recv(&socket).await?;
-    // TODO: if try_from() or the subsequent ID comparison fails, udp_recv() should be called again
-    // until the packet is received or some timeout occurs.
+    // TODO: b/430720622 - If try_from() or the subsequent ID comparison fails, udp_recv() should be
+    // called again until the packet is received or some timeout occurs.
     // Alternatively, consider responding with a ServFail.
     let response = DnsPacket::try_from(buf)?;
     if response.header().id != query_dns_id {
