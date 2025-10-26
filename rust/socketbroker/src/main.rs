@@ -15,36 +15,57 @@
 //! A utility that can be used to open sockets and bind them to privileged ports.
 //! The bound socket is returned via the provided unix socket.
 
-use clap::{Parser, ValueEnum};
-use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
-use socket2::{Domain, Socket, Type};
-use std::os::unix::net::UnixStream;
-use std::{
-    io::{Error, IoSlice, Result},
-    net::{Ipv6Addr, SocketAddrV6},
-    os::fd::RawFd,
-};
+use clap::Parser;
+use log::error;
+use log::LevelFilter;
+use nix::fcntl::fcntl;
+use nix::fcntl::FcntlArg;
+use nix::fcntl::OFlag;
+use nix::sys::socket::recv;
+use nix::sys::socket::send;
+use nix::sys::socket::sendmsg;
+use nix::sys::socket::ControlMessage;
+use nix::sys::socket::MsgFlags;
+use socket2::Domain;
+use socket2::Socket;
+use socket2::Type;
+use std::io::Error;
+use std::io::ErrorKind;
+use std::io::IoSlice;
+use std::io::Result;
+use std::net::Ipv6Addr;
+use std::net::SocketAddrV6;
+use std::os::fd::AsRawFd as _;
+use std::os::fd::FromRawFd;
+use std::os::fd::OwnedFd;
+use std::os::fd::RawFd;
 
-#[derive(ValueEnum, Clone)]
-#[clap(rename_all = "kebab_case")]
 enum SocketType {
-    TCP,
+    TCP { ifindex: u32 },
     UDP,
+}
+
+impl SocketType {
+    fn from_message(buf: &[u8]) -> Option<SocketType> {
+        // UDP socket requests are encoded as a single arbitrary byte.
+        // TCP socket requests are encoded as a 4-byte little-endian ifindex.
+        if buf.len() == 1 {
+            Some(SocketType::UDP)
+        } else if buf.len() == 4 {
+            // The conversion cannot fail because the length was already checked above.
+            let bytes: [u8; 4] = buf.try_into().unwrap();
+            Some(SocketType::TCP { ifindex: u32::from_le_bytes(bytes) })
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Parser)]
 struct Args {
-    // Socket type to open.
-    #[arg(long, value_enum)]
-    socktype: SocketType,
-
-    // Interface index to bind the socket to. Must be provided when `--sockype tcp`
+    // File descriptor of unix seqpacket socket to pass a socket request / result.
     #[arg(long)]
-    ifindex: Option<u32>,
-
-    // File descriptor of unix domain socket to pass the result.
-    #[arg(long)]
-    resultfd: i32,
+    cmdfd: i32,
 }
 
 trait SocketExt {
@@ -70,26 +91,54 @@ impl SocketExt for Socket {
     }
 }
 
-trait UnixStreamExt {
-    fn send_with_fd(&self, buf: &[u8], fd: RawFd) -> Result<usize>;
+/// UnixSeqpacket is loosely modeled after std::os::unix::net::UnixDatagram.
+struct UnixSeqpacket {
+    fd: OwnedFd,
 }
 
-impl UnixStreamExt for UnixStream {
-    fn send_with_fd(&self, buf: &[u8], fd: RawFd) -> Result<usize> {
-        let iov = [IoSlice::new(buf)];
-        let fds = [fd];
-        let cmsgs = [ControlMessage::ScmRights(&fds)];
+impl UnixSeqpacket {
+    fn set_nonblocking(&self, nonblocking: bool) -> Result<()> {
+        let mut flags = OFlag::from_bits_truncate(fcntl(self.fd.as_raw_fd(), FcntlArg::F_GETFL)?);
+        if nonblocking {
+            flags.insert(OFlag::O_NONBLOCK)
+        } else {
+            flags.remove(OFlag::O_NONBLOCK)
+        }
+        fcntl(self.fd.as_raw_fd(), FcntlArg::F_SETFL(flags))?;
+        Ok(())
+    }
 
-        use std::os::fd::AsRawFd as _;
-        let rawfd = self.as_raw_fd();
-        let size = sendmsg::<()>(rawfd, &iov, &cmsgs, MsgFlags::empty(), None)?;
+    fn recv(&self, buf: &mut [u8]) -> Result<usize> {
+        let len = recv(self.fd.as_raw_fd(), buf, MsgFlags::empty())?;
+        Ok(len)
+    }
+
+    fn send(&self, buf: &[u8]) -> Result<usize> {
+        let len = send(self.fd.as_raw_fd(), buf, MsgFlags::empty())?;
+        Ok(len)
+    }
+
+    fn send_with_fd(&self, buf: &[u8], fd: OwnedFd) -> Result<usize> {
+        let iov = [IoSlice::new(buf)];
+        let raw_fds = [fd.as_raw_fd()];
+        let cmsgs = [ControlMessage::ScmRights(&raw_fds)];
+
+        let size = sendmsg::<()>(self.fd.as_raw_fd(), &iov, &cmsgs, MsgFlags::empty(), None)?;
         Ok(size)
     }
 }
 
-fn create_socket(socktype: SocketType, ifindex: Option<u32>) -> Result<Socket> {
+impl FromRawFd for UnixSeqpacket {
+    unsafe fn from_raw_fd(fd: RawFd) -> Self {
+        // SAFETY:
+        // The caller is responsible for ensuring that `fd` is a valid (and unowned) file descriptor
+        unsafe { Self { fd: OwnedFd::from_raw_fd(fd) } }
+    }
+}
+
+fn create_socket(socktype: SocketType) -> Result<Socket> {
     let t = match socktype {
-        SocketType::TCP => Type::STREAM.nonblocking().cloexec(),
+        SocketType::TCP { .. } => Type::STREAM.nonblocking().cloexec(),
         SocketType::UDP => Type::DGRAM.nonblocking().cloexec(),
     };
     let socket = Socket::new(Domain::IPV6, t, None)?;
@@ -98,7 +147,7 @@ fn create_socket(socktype: SocketType, ifindex: Option<u32>) -> Result<Socket> {
     socket.set_only_v6(false)?;
     socket.set_reuse_address(true)?;
 
-    if let Some(ifindex) = ifindex {
+    if let SocketType::TCP { ifindex } = socktype {
         socket.bind_ifindex(ifindex)?;
     }
 
@@ -115,16 +164,52 @@ fn create_socket(socktype: SocketType, ifindex: Option<u32>) -> Result<Socket> {
 }
 
 fn main() -> Result<()> {
+    android_logger::init_once(android_logger::Config::default().with_max_level(LevelFilter::Info));
     let args = Args::parse();
-    let sock = create_socket(args.socktype, args.ifindex)?;
 
-    use std::os::fd::FromRawFd as _;
-    // Safety: The parent process passes a valid file descriptor which the child is expected to
-    // close.
-    let result_stream = unsafe { UnixStream::from_raw_fd(args.resultfd) };
+    // SAFETY:
+    // The parent process passes a valid file descriptor which the child is expected to close.
+    let cmd_sock = unsafe { UnixSeqpacket::from_raw_fd(args.cmdfd) };
+    cmd_sock.set_nonblocking(false)?;
 
-    // Send a single 0 byte along with the fd.
-    use std::os::fd::AsRawFd as _;
-    let _ = result_stream.send_with_fd(&[0; 1], sock.as_raw_fd())?;
+    loop {
+        // Allocate a 5-byte buffer to detect large packets since the maximum message length is 4 bytes.
+        let mut buf = [0; 5];
+        let len = match cmd_sock.recv(&mut buf) {
+            // If the other side closed gracefully, the socket will read EOF (len == 0). Otherwise,
+            // it will return with ECONNRESET. In either case, exit the program.
+            Ok(0) => break,
+            Err(e) if e.kind() == ErrorKind::ConnectionReset => break,
+
+            // Other messages are processed and other errors are ignored.
+            Ok(len) => len,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => {
+                // TODO: Consider panicking as common errors are handled above.
+                error!("recv failed: {e}");
+                continue;
+            }
+        };
+
+        let Some(socket_type) = SocketType::from_message(&buf[..len]) else {
+            // Ignore invalid messages.
+            error!("Failed to parse socket request message with len {}", len);
+            continue;
+        };
+
+        match create_socket(socket_type) {
+            Ok(sock) => {
+                // Send a single 0 byte along with the fd. Ignore any errors.
+                let _ = cmd_sock.send_with_fd(&[0; 1], sock.into());
+            }
+            Err(e) => {
+                // If socket creation failed, log and send a single 0 byte to unblock the reader.
+                // Ignore any errors.
+                error!("Failed to create socket: {e}");
+                let _ = cmd_sock.send(&[0; 1]);
+            }
+        }
+    }
+
     Ok(())
 }
