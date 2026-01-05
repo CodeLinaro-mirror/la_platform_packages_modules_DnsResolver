@@ -18,47 +18,20 @@
 use clap::Parser;
 use log::error;
 use log::LevelFilter;
-use nix::fcntl::fcntl;
-use nix::fcntl::FcntlArg;
-use nix::fcntl::OFlag;
-use nix::sys::socket::recv;
-use nix::sys::socket::send;
-use nix::sys::socket::sendmsg;
-use nix::sys::socket::ControlMessage;
-use nix::sys::socket::MsgFlags;
+use resolvrs_utils::socket::sync::UnixSeqpacket;
 use socket2::Domain;
 use socket2::Socket;
 use socket2::Type;
 use std::io::Error;
 use std::io::ErrorKind;
-use std::io::IoSlice;
 use std::io::Result;
 use std::net::Ipv6Addr;
 use std::net::SocketAddrV6;
-use std::os::fd::AsRawFd as _;
-use std::os::fd::FromRawFd;
-use std::os::fd::OwnedFd;
-use std::os::fd::RawFd;
+use std::os::fd::FromRawFd as _;
 
 enum SocketType {
     TCP { ifindex: u32 },
     UDP,
-}
-
-impl SocketType {
-    fn from_message(buf: &[u8]) -> Option<SocketType> {
-        // UDP socket requests are encoded as a single arbitrary byte.
-        // TCP socket requests are encoded as a 4-byte little-endian ifindex.
-        if buf.len() == 1 {
-            Some(SocketType::UDP)
-        } else if buf.len() == 4 {
-            // The conversion cannot fail because the length was already checked above.
-            let bytes: [u8; 4] = buf.try_into().unwrap();
-            Some(SocketType::TCP { ifindex: u32::from_le_bytes(bytes) })
-        } else {
-            None
-        }
-    }
 }
 
 #[derive(Parser)]
@@ -88,51 +61,6 @@ impl SocketExt for Socket {
         let ifname_ubuf: &[u8] = bytemuck::cast_slice(&ifname_buf);
         self.bind_device(Some(ifname_ubuf))?;
         Ok(())
-    }
-}
-
-/// UnixSeqpacket is loosely modeled after std::os::unix::net::UnixDatagram.
-struct UnixSeqpacket {
-    fd: OwnedFd,
-}
-
-impl UnixSeqpacket {
-    fn set_nonblocking(&self, nonblocking: bool) -> Result<()> {
-        let mut flags = OFlag::from_bits_truncate(fcntl(self.fd.as_raw_fd(), FcntlArg::F_GETFL)?);
-        if nonblocking {
-            flags.insert(OFlag::O_NONBLOCK)
-        } else {
-            flags.remove(OFlag::O_NONBLOCK)
-        }
-        fcntl(self.fd.as_raw_fd(), FcntlArg::F_SETFL(flags))?;
-        Ok(())
-    }
-
-    fn recv(&self, buf: &mut [u8]) -> Result<usize> {
-        let len = recv(self.fd.as_raw_fd(), buf, MsgFlags::empty())?;
-        Ok(len)
-    }
-
-    fn send(&self, buf: &[u8]) -> Result<usize> {
-        let len = send(self.fd.as_raw_fd(), buf, MsgFlags::empty())?;
-        Ok(len)
-    }
-
-    fn send_with_fd(&self, buf: &[u8], fd: OwnedFd) -> Result<usize> {
-        let iov = [IoSlice::new(buf)];
-        let raw_fds = [fd.as_raw_fd()];
-        let cmsgs = [ControlMessage::ScmRights(&raw_fds)];
-
-        let size = sendmsg::<()>(self.fd.as_raw_fd(), &iov, &cmsgs, MsgFlags::empty(), None)?;
-        Ok(size)
-    }
-}
-
-impl FromRawFd for UnixSeqpacket {
-    unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        // SAFETY:
-        // The caller is responsible for ensuring that `fd` is a valid (and unowned) file descriptor
-        unsafe { Self { fd: OwnedFd::from_raw_fd(fd) } }
     }
 }
 
@@ -172,23 +100,32 @@ fn main() -> Result<()> {
     let cmd_sock = unsafe { UnixSeqpacket::from_raw_fd(args.cmdfd) };
     cmd_sock.set_nonblocking(false)?;
 
+    // Immediately create a UDP socket.
+    let sock = create_socket(SocketType::UDP)?;
+    cmd_sock.send_with_fd(&[0; 1], sock.into())?;
+
     loop {
-        // Allocate a 5-byte buffer to detect large packets since the maximum message length is 4 bytes.
+        // Allocate a 5-byte buffer to detect large packets since the message length is 4 bytes.
         let mut buf = [0; 5];
-        let len = match cmd_sock.recv(&mut buf) {
-            // If the other side closed gracefully, the socket will read EOF (len == 0). Otherwise,
-            // it will return with ECONNRESET. In either case, exit the program.
+        let ifindex = match cmd_sock.recv(&mut buf) {
+            Ok(4) => u32::from_le_bytes(buf[..4].try_into().unwrap()),
+            // If the other side closed gracefully, the socket will read EOF (len == 0, handled as
+            // part of Ok(len)). Otherwise, it will return with ECONNRESET. In either case, exit
+            // the program.
             // Note that len == 0 could also indicate a 0-length packet. The 2 cases are
             // indistinguishable on AF_UNIX SOCK_SEQPACKET sockets when using recv(). It seems that
             // the only way to reliably detect socket closure is to poll() and wait for POLLHUP |
             // POLLERR. In reality, this should not matter, because we are in control of the
             // client and should never see a 0-length packet.
-            Ok(0) => break,
             Err(e) if e.kind() == ErrorKind::ConnectionReset => break,
 
-            // Other messages are processed and other errors are ignored.
-            Ok(len) => len,
-            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            // A TCP socket request must always be 4-bytes, so exit the program if any other length
+            // is received.
+            Ok(_len) => {
+                error!("Received an illformed TCP socket request");
+                panic!();
+            }
+            // Ignore all other errors. This should never happen.
             Err(e) => {
                 // TODO: Consider panicking as common errors are handled above.
                 error!("recv failed: {e}");
@@ -196,13 +133,7 @@ fn main() -> Result<()> {
             }
         };
 
-        let Some(socket_type) = SocketType::from_message(&buf[..len]) else {
-            // Ignore invalid messages.
-            error!("Failed to parse socket request message with len {}", len);
-            continue;
-        };
-
-        match create_socket(socket_type) {
+        match create_socket(SocketType::TCP { ifindex }) {
             Ok(sock) => {
                 // Send a single 0 byte along with the fd. Ignore any errors.
                 let _ = cmd_sock.send_with_fd(&[0; 1], sock.into());

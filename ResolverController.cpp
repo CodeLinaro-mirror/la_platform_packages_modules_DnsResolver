@@ -284,13 +284,12 @@ int ResolverController::getPrefix64(unsigned netId, netdutils::IPPrefix* prefix)
     return 0;
 }
 
-void ResolverController::configureDnsForwarding(uint32_t netid, uint32_t uid, uint32_t ifindex,
-                                                uint16_t port) {
-    mDnsProxy->configureDnsProxy(netid, uid, ifindex, port);
+int ResolverController::configureDnsForwarding(uint32_t ifindex, uint32_t netid, uint32_t uid) {
+    return mDnsProxy->configureDnsForwarding(ifindex, netid, uid);
 }
 
-void ResolverController::stopDnsForwarding(uint32_t ifindex, uint16_t port) {
-    mDnsProxy->stopDnsProxy(ifindex, port);
+int ResolverController::stopDnsForwarding(uint32_t ifindex) {
+    return mDnsProxy->stopDnsForwarding(ifindex);
 }
 
 void ResolverController::dump(DumpWriter& dw, unsigned netId) {
