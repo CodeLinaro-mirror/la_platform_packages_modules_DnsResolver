@@ -91,7 +91,7 @@ cc_test {
     name: "resolv_gold_test",
     test_suites: [
         "general-tests",
-        "mts-dnsresolver",
+        "mts-tethering",
     ],
     isolated: false,
     require_root: true,
@@ -148,7 +148,7 @@ cc_test {
     name: "resolv_stress_test",
     test_suites: [
         "general-tests",
-        "mts-dnsresolver",
+        "mts-tethering",
     ],
     isolated: false,
     // This won't work with test_config
@@ -184,7 +184,7 @@ cc_test {
     name: "resolv_integration_test",
     test_suites: [
         "general-tests",
-        "mts-dnsresolver",
+        "mts-tethering",
     ],
     isolated: false,
     require_root: true,
@@ -258,7 +258,10 @@ cc_test {
     name: "resolv_unit_test",
     test_suites: [
         "general-tests",
+        // TODO: clean "mts-dnsresolver" after remove the DnsResolver module
+        // test gantry gate
         "mts-dnsresolver",
+        "mts-tethering",
     ],
     isolated: false,
     require_root: true,
@@ -288,6 +291,7 @@ cc_test {
         "libcrypto_static",
         "libconnectivity_native_test_utils",
         "libcutils",
+        "libdns_helper",
         "libgmock",
         "libnetd_resolv",
         "libnetd_test_dnsresponder_ndk",
@@ -346,7 +350,7 @@ cc_test {
     name: "doh_ffi_test",
     test_suites: [
         "general-tests",
-        "mts-dnsresolver",
+        "mts-tethering",
     ],
     defaults: [
         "connectivity-mainline-presubmit-cc-defaults",
@@ -466,9 +470,7 @@ cc_fuzz {
         "libbase",
         "libbinder_random_parcel",
         "libcutils",
-    ],
-    shared_libs: [
-        "libcom.android.tethering.dns_helper",
+        "libdns_helper",
     ],
     target: {
         android: {
