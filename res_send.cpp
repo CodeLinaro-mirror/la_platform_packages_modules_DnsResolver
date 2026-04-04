@@ -440,6 +440,9 @@ static bool isNetworkRestricted(int terrno) {
 
 static bool isClientStreamSocketClosed(std::optional<int> fd) {
     if (!fd.has_value()) return false;
+    if (!android::net::Experiments::getInstance()->getFlag("no_retry_after_cancel", 0)) {
+        return false;
+    }
     struct pollfd fds{
             // POLLHUP is always included in events but is specified explicitly here
             .fd = fd.value(),

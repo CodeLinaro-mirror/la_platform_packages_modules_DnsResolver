@@ -403,6 +403,8 @@ class ResolverTest : public NetNativeTestBase {
         return fmt::format("127.0.100.{}", (++counter & 0xff));
     }
 
+    void runCancelledQueryTest(bool expectCancelled);
+
     int runTryAllServersTest(const test::DNSResponder& server_1, const test::DNSResponder& server_2,
                              std::string* answer);
 
@@ -3023,7 +3025,7 @@ TEST_F(ResolverTest, Async_VerifyQueryID) {
     EXPECT_EQ(1U, GetNumQueries(dns, host_name));
 }
 
-TEST_F(ResolverTest, Async_CancelledQuery) {
+void ResolverTest::runCancelledQueryTest(bool expectCancelled) {
     resetNetwork();
     constexpr char listen_addr[] = "127.0.0.4";
     constexpr char host_name_1[] = "howdy1.example.com.";
@@ -3053,9 +3055,25 @@ TEST_F(ResolverTest, Async_CancelledQuery) {
 
     expectAnswersNotValid(fd2, -ETIMEDOUT);
 
-    // Expect 2 retries on the second query, but only one attempt on the first one
-    EXPECT_EQ(2U, GetNumQueries(dns, host_name_2));
-    EXPECT_EQ(1U, GetNumQueries(dns, host_name_1));
+    if (expectCancelled) {
+        // Expect 2 retries on the second query, but only one attempt on the first one
+        EXPECT_EQ(2U, GetNumQueries(dns, host_name_2));
+        EXPECT_EQ(1U, GetNumQueries(dns, host_name_1));
+    } else {
+        // The queries are not actually cancelled and multiple are sent. Poll as in some cases the
+        // timeout for query 2 will come before queries are done for query 1.
+        EXPECT_TRUE(PollForCondition([&]() { return GetNumQueries(dns, host_name_1) > 1U; }));
+    }
+}
+
+TEST_F(ResolverTest, Async_CancelledQuery) {
+    ScopedSystemProperties sp(kNoRetryAfterCancelFlag, "1");
+    ASSERT_NO_FATAL_FAILURE(runCancelledQueryTest(/*expectCancelled=*/true));
+}
+
+TEST_F(ResolverTest, Async_CancelledQueryWithFlagDisabled) {
+    ScopedSystemProperties sp(kNoRetryAfterCancelFlag, "0");
+    ASSERT_NO_FATAL_FAILURE(runCancelledQueryTest(/*expectCancelled=*/false));
 }
 
 int ResolverTest::runTryAllServersTest(const test::DNSResponder& server_1,
